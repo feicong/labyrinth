@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.21 FATAL_ERROR)
 include(GenerateExportHeader)
 
+# Allow CPM dependencies that declare cmake_minimum_required < 3.5 to still
+# configure under CMake 3.27+ (which otherwise errors on such old minimums).
+if (NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif ()
+
 project(labyrinth LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
