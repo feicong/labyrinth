@@ -15,6 +15,7 @@ include(cmake/get-cpm.cmake)
 include(cmake/LLVM.cmake)
 include(cmake/Eigen.cmake)
 
+set(CMAKE_POLICY_VERSION_MINIMUM "3.5")
 set(Random_BuildTests OFF)
 CPMAddPackage(
         NAME effolkronium-random
