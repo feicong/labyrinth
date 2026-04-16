@@ -111,7 +111,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Linux dependencies
+      - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -121,36 +121,27 @@ jobs:
             build-essential \
             cmake \
             ninja-build \
-            pkg-config \
-            wget \
-            lsb-release \
-            software-properties-common \
-            gnupg
+            pkg-config
 
-          # Install LLVM via llvm.sh script
-          llvm_version='${{ needs.prepare.outputs.llvm_version }}'
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh "${llvm_version}"
-
-          # Symlink llvm-config so CMake can find it
-          sudo ln -sf "/usr/lib/llvm-${llvm_version}/bin/llvm-config" /usr/local/bin/llvm-config
-
-      - name: Install macOS dependencies
+      - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          brew install ninja llvm@${{ needs.prepare.outputs.llvm_version }}
+          brew install ninja
 
-      - name: Install Windows dependencies
+      - name: Install Windows build dependencies
         if: runner.os == 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           choco install ninja --yes --no-progress
-          choco install llvm --version=${{ needs.prepare.outputs.llvm_version }}.0 --yes --no-progress || \
-            choco install llvm --yes --no-progress
+
+      - name: Install LLVM
+        id: install-llvm
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ needs.prepare.outputs.llvm_version }}
 
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
@@ -162,21 +153,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          llvm_home="${{ steps.install-llvm.outputs.llvm-path }}"
+
           case "${RUNNER_OS}" in
             Linux)
-              llvm_version='${{ needs.prepare.outputs.llvm_version }}'
-              llvm_home="/usr/lib/llvm-${llvm_version}"
               host_triple="$(uname -m)-unknown-linux-gnu"
               lib_name="liblabyrinth.so"
               ;;
             macOS)
-              llvm_version='${{ needs.prepare.outputs.llvm_version }}'
-              llvm_home="$(brew --prefix llvm@${llvm_version})"
               host_triple="$(uname -m)-apple-darwin"
               lib_name="liblabyrinth.dylib"
               ;;
             Windows)
-              llvm_home="C:/Program Files/LLVM"
               case "${PROCESSOR_ARCHITECTURE}" in
                 AMD64) win_arch="x86_64" ;;
                 ARM64) win_arch="aarch64" ;;
