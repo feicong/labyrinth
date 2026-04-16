@@ -1,0 +1,286 @@
+# Copyright (c) 2025-2026 fei_cong(https://github.com/feicong/feicong-course)
+
+name: ollvm
+
+on:
+  push:
+    branches:
+      - main
+      - 'llvm-*.x'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: LLVM version to build against
+        required: false
+        default: "18.1.8"
+        type: string
+      release_tag:
+        description: Target release tag (leave empty to use branch name)
+        required: false
+        default: ""
+        type: string
+      upload:
+        description: Upload artifacts to Release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+      llvm_version: ${{ steps.vars.outputs.llvm_version }}
+      upload: ${{ steps.vars.outputs.upload }}
+    steps:
+      - name: Compute variables
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          llvm_version='18.1.8'
+          release_tag=''
+          upload='true'
+
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            if [ -n '${{ inputs.llvm_version }}' ]; then
+              llvm_version='${{ inputs.llvm_version }}'
+            fi
+            if [ -n '${{ inputs.release_tag }}' ]; then
+              release_tag='${{ inputs.release_tag }}'
+            fi
+            upload='${{ inputs.upload }}'
+          fi
+
+          if [ -z "$release_tag" ]; then
+            case '${{ github.ref_name }}' in
+              llvm-*.x)
+                release_tag='${{ github.ref_name }}'
+                ;;
+              *)
+                release_tag='${{ github.ref_name }}'
+                ;;
+            esac
+          fi
+
+          release_tag_safe="$(printf '%s' "$release_tag" | sed 's/[^A-Za-z0-9._-]/-/g')"
+          release_name="Labyrinth OLLVM Plugin (${release_tag_safe})"
+
+          {
+            echo "llvm_version=$llvm_version"
+            echo "release_tag=$release_tag_safe"
+            echo "release_name=$release_name"
+            echo "upload=$upload"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }} plugin
+    needs: prepare
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            runs_on: ubuntu-24.04
+            archive_ext: tar.xz
+          - label: macos
+            runs_on: macos-15
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ninja
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ needs.prepare.outputs.llvm_version }}
+
+      - name: Detect host info
+        id: host
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          llvm_home="${LLVM_PATH:-}"
+          if [ -z "$llvm_home" ]; then
+            echo "LLVM_PATH is empty after install-llvm-action" >&2
+            exit 1
+          fi
+
+          case "${RUNNER_OS}" in
+            Linux)
+              host_triple="$(uname -m)-unknown-linux-gnu"
+              lib_name="liblabyrinth.so"
+              ;;
+            macOS)
+              host_triple="$(uname -m)-apple-darwin"
+              lib_name="liblabyrinth.dylib"
+              ;;
+            *)
+              echo "Unsupported OS: ${RUNNER_OS}" >&2
+              exit 1
+              ;;
+          esac
+
+          release_tag='${{ needs.prepare.outputs.release_tag }}'
+          archive_name="labyrinth-${release_tag}-${host_triple}.${{ matrix.archive_ext }}"
+
+          {
+            echo "LLVM_HOME=$llvm_home"
+            echo "llvm_home=$llvm_home"
+            echo "host_triple=$host_triple"
+            echo "lib_name=$lib_name"
+            echo "archive_name=$archive_name"
+          } | tee -a "$GITHUB_OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Build labyrinth plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR="${{ steps.host.outputs.llvm_home }}/lib/cmake/llvm"
+          cmake --build build --parallel
+
+      - name: Package artifact
+        id: package_unix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_name="${{ steps.host.outputs.archive_name }}"
+          archive_path="$GITHUB_WORKSPACE/$archive_name"
+          package_root="$RUNNER_TEMP/labyrinth-package"
+          lib_name="${{ steps.host.outputs.lib_name }}"
+
+          mkdir -p "$package_root"
+          cp "build/$lib_name" "$package_root/$lib_name"
+
+          case "${{ matrix.archive_ext }}" in
+            tar.xz)
+              tar -C "$package_root" -cf - "$lib_name" | xz -T0 > "$archive_path"
+              ;;
+            tar.gz)
+              tar -C "$package_root" -czf "$archive_path" "$lib_name"
+              ;;
+            *)
+              echo "Unsupported archive extension: ${{ matrix.archive_ext }}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}-plugin
+          path: ${{ steps.package_unix.outputs.archive_path }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    if: ${{ needs.prepare.outputs.upload == 'true' && github.event_name != 'pull_request' }}
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Update release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ needs.prepare.outputs.release_tag }}" "${{ github.sha }}"
+          git push origin "refs/tags/${{ needs.prepare.outputs.release_tag }}" --force
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            printf '%s\n' \
+              "## Labyrinth OLLVM Plugin" \
+              "" \
+              "- **Branch:** \`${{ github.ref_name }}\`" \
+              "- **Release Tag:** \`${{ needs.prepare.outputs.release_tag }}\`" \
+              "- **Commit:** \`${{ github.sha }}\`" \
+              "" \
+              "These archives contain the compiled \`labyrinth\` LLVM obfuscation plugin shared library." \
+              "" \
+              "## Usage" \
+              "" \
+              "\`\`\`bash" \
+              "# Pass the plugin to clang via -fpass-plugin" \
+              'clang -fpass-plugin=./liblabyrinth.so your_source.c -o your_binary' \
+              "\`\`\`" \
+              "" \
+              "## Supported Platforms" \
+              "" \
+              "| Platform | Library |" \
+              "|----------|---------|" \
+              "| Linux    | \`liblabyrinth.so\` |" \
+              "| macOS    | \`liblabyrinth.dylib\` |"
+          } > release-notes.md
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          body_path: release-notes.md
+          files: release-assets/*
+          make_latest: false
