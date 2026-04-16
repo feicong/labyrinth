@@ -177,7 +177,12 @@ jobs:
               ;;
             Windows)
               llvm_home="C:/Program Files/LLVM"
-              host_triple="${PROCESSOR_ARCHITECTURE}-pc-windows-msvc"
+              case "${PROCESSOR_ARCHITECTURE}" in
+                AMD64) win_arch="x86_64" ;;
+                ARM64) win_arch="aarch64" ;;
+                *) echo "Unsupported Windows architecture: ${PROCESSOR_ARCHITECTURE}" >&2; exit 1 ;;
+              esac
+              host_triple="${win_arch}-pc-windows-msvc"
               lib_name="labyrinth.dll"
               ;;
             *)
@@ -233,7 +238,7 @@ jobs:
           mkdir -p "$package_root"
           cp "build/$lib_name" "$package_root/$lib_name"
 
-          tar -C "$package_root" -cJf "$archive_path" "$lib_name"
+          tar -C "$package_root" -cf - "$lib_name" | xz -T0 > "$archive_path"
           echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
 
       - name: Package artifact (Windows)
